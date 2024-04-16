@@ -20,12 +20,5 @@ public class ViewsTest extends baseTest {
 
         assertTrue(views.isCurrentDateDisplayed(),"verify current date displayed");
         views.enterNewYearDateTextBox();
-
-
-
-
-
-
-
     }
 }

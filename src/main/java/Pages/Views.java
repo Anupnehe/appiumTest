@@ -22,14 +22,11 @@ public class Views extends BasePage{
     @AndroidFindBy(accessibility = "Previous month")
     private WebElement previousMonth;
 
-    @AndroidFindBy(accessibility = "01 January 2024")
-    private WebElement newYearDate;
+  @AndroidFindBy(accessibility = "01 January 2024")
+  private WebElement newYearDate;
 
     @AndroidFindBy(xpath = "//android.widget.Button[@resource-id=\"android:id/button1\"]")
     private WebElement okButton;
-
-
-
 
     public Views(AppiumDriver driver) {
         super(driver);
@@ -50,7 +47,6 @@ public class Views extends BasePage{
     return isElementVisible(currentDate);
   }
 
-
   public boolean isDateWidgetDisplayed(){
       return isElementVisible(dateWidgets);
   }
@@ -58,11 +54,11 @@ public class Views extends BasePage{
   public void enterNewYearDateTextBox() {
     clickOnElement(changeTheDateButton);
     int MAX_ATTEMPTS = 12;
-    if (!isElementVisible(newYearDate)) {
+    if (!isElementVisible(newYearDate,10)) {
       for (int i = 0; i < MAX_ATTEMPTS; i++) {
         try {
           clickOnElement(previousMonth);
-          if(isElementVisible(newYearDate)) {
+          if(isElementVisible(newYearDate,15)) {
             break;
           }
         } catch (NoSuchElementException e) {
