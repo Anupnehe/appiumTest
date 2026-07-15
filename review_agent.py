@@ -1,63 +1,127 @@
 import os
 import sys
-from github import Github
+import re
+from github import Github, Auth
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Initialize API clients
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-# Initialize your preferred LLM client here (e.g., google-genai or openai)
-# For this example, we'll simulate the LLM call logic structurally
+LLM_API_KEY = os.getenv("LLM_API_KEY")
 
 def get_llm_review(diff_text):
     """
-    Sends the code diff to the LLM and requests structured feedback.
+    Sends the git diff to Gemini to get targeted code reviews.
     """
-    system_prompt = """
-    You are an expert Senior Software Engineer and QA Automation Architect.
-    Review the following git diff. Identify bugs, security flaws, performance issues,
-    missing edge cases, or bad test patterns.
+    if not LLM_API_KEY:
+        print("Warning: LLM_API_KEY is not set.")
+        return "LGTM"
 
-    CRITICAL: Provide your output strictly in the following format for each issue found:
-    LINE: [line_num]
-    FILE: [filename]
-    COMMENT: [Your concise, actionable feedback]
+    client = genai.Client(api_key=LLM_API_KEY)
+
+    system_instruction = """
+    You are an expert Senior QA Automation Engineer and Software Developer.
+    Analyze the following git diff. Point out bugs, security flaws, performance bottlenecks,
+    or bad test practices (like hardcoded sleep times, missing assertions, or brittle selectors).
+
+    CRITICAL: You must provide your output strictly in the following format for each issue you find:
+    LINE: [line_number]
+    COMMENT: [Your concise, polite, and actionable feedback]
     ---
-    If the code looks excellent, reply with 'LGTM'.
+
+    If the code looks perfect, reply with ONLY 'LGTM'. Do not output any other format.
     """
 
-    # Placeholder for actual LLM API call:
-    # response = llm_client.generate(prompt=system_prompt + "\n\n" + diff_text)
-    # return response.text
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=diff_text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.2,
+            )
+        )
+        return response.text
+    except Exception as e:
+        print(f"Error calling Gemini API: {e}")
+        return "LGTM"
 
-    return "Example LLM Output status"
+def parse_comments(llm_output):
+    """
+    Parses structured LLM output looking for LINE and COMMENT blocks.
+    """
+    comments = []
+    # Split by the separator defined in the system instruction
+    blocks = llm_output.split("---")
+    for block in blocks:
+        line_match = re.search(r"LINE:\s*(\d+)", block)
+        comment_match = re.search(r"COMMENT:\s*(.*)", block, re.DOTALL)
+
+        if line_match and comment_match:
+            try:
+                line_num = int(line_match.group(1).strip())
+                comment_text = comment_match.group(1).strip()
+                comments.append((line_num, comment_text))
+            except ValueError:
+                continue
+    return comments
 
 def review_pull_request(repo_name, pr_number):
-    g = Github(GITHUB_TOKEN)
+    if not GITHUB_TOKEN:
+        print("Error: GITHUB_TOKEN is not set.")
+        return
+
+    # Using the updated non-deprecated Auth method
+    auth = Auth.Token(GITHUB_TOKEN)
+    g = Github(auth=auth)
+
     repo = g.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
 
-    print(f"Analyzing PR #{pr_number}: {pr.title}")
+    print(f"Analyzing PR #{pr_number}: '{pr.title}'")
 
-    # Get all changed files and their diffs
+    # Get the latest commit to bind inline comments to
+    latest_commit = pr.get_commits().reversed[0]
     files = pr.get_files()
 
+    comments_added = 0
+
     for file in files:
-        if file.patch: # file.patch contains the raw git diff hunk
+        if file.patch: # Only review files that have actual code modifications
             print(f"Reviewing file: {file.filename}")
 
-            # Get review from LLM
+            # Send the diff patch directly to Gemini
             review_feedback = get_llm_review(file.patch)
 
-            # Parse the structured feedback and post comments
-            # In a production script, you'd parse line numbers and post inlines:
-            # pr.create_review_comment(body="Feedback text", commit_id=pr.get_commits().reversed[0], path=file.filename, line=line_num)
+            if "LGTM" in review_feedback:
+                print(f"No issues found for {file.filename}")
+                continue
 
-    # Optional: Post a top-level summary comment
-    pr.create_issue_comment("🤖 **Agent Review Complete:** Checked all modified files for patterns, performance, and coverage holes.")
+            # Parse the feedback into structured (line_number, comment) tuples
+            parsed_issues = parse_comments(review_feedback)
+
+            for line_num, comment_text in parsed_issues:
+                try:
+                    # Post the comment to the specific line of the file in the PR
+                    pr.create_review_comment(
+                        body=f"🤖 **AI Feedback:** {comment_text}",
+                        commit=latest_commit,
+                        path=file.filename,
+                        line=line_num
+                    )
+                    comments_added += 1
+                    print(f"Added comment on {file.filename} line {line_num}")
+                except Exception as e:
+                    print(f"Couldn't add comment on line {line_num}: {e}")
+
+    # Post a final summary comment on the general PR thread
+    if comments_added > 0:
+        pr.create_issue_comment(f"🤖 **Agent Review Complete:** Found {comments_added} issues that need attention.")
+    else:
+        pr.create_issue_comment("🤖 **Agent Review Complete:** Code looks great! No issues detected. LGTM! 🎉")
 
 if __name__ == "__main__":
-    # Example usage: python review_agent.py "owner/repo" 12
     if len(sys.argv) > 2:
         review_pull_request(sys.argv[1], int(sys.argv[2]))
