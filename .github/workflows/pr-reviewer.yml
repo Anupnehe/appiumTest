@@ -7,13 +7,6 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
-    
-    # CRITICAL: This explicitly grants the token permission to post PR comments
-    permissions:
-      pull-requests: write
-      contents: read
-      issues: write
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -21,15 +14,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Fixed typo from python-level to python-version
+          python-level: '3.11'
 
       - name: Install Dependencies
         run: |
-          pip install PyGithub python-dotenv google-genai
+          pip install PyGithub python-dotenv
 
       - name: Run Review Agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass your LLM API Keys here as secrets
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }} 
         run: |
           python review_agent.py "${{ github.repository }}" ${{ github.event.pull_request.number }}
