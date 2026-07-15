@@ -1,0 +1,29 @@
+name: AI Pull Request Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-level: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install PyGithub python-dotenv
+
+      - name: Run Review Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass your LLM API Keys here as secrets
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }} 
+        run: |
+          python review_agent.py "${{ github.repository }}" ${{ github.event.pull_request.number }}
