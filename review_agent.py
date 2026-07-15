@@ -13,36 +13,40 @@ LLM_API_KEY = os.getenv("LLM_API_KEY")
 
 def get_llm_review(diff_text):
     """
-    Sends the git diff to Gemini to get targeted code reviews.
+    Sends the git diff patch directly to Gemini to get targeted code reviews.
     """
     if not LLM_API_KEY:
         print("Warning: LLM_API_KEY is not set.")
         return "LGTM"
 
     client = genai.Client(api_key=LLM_API_KEY)
-
+    
     system_instruction = """
-    You are an expert Senior QA Automation Engineer and Software Developer.
-    Analyze the following git diff. Point out bugs, security flaws, performance bottlenecks,
-    or bad test practices (like hardcoded sleep times, missing assertions, or brittle selectors).
-
-    CRITICAL: You must provide your output strictly in the following format for each issue you find:
-    LINE: [line_number]
-    COMMENT: [Your concise, polite, and actionable feedback]
+    You are an expert Senior QA Automation Engineer and Software Developer. 
+    Analyze the following git diff (patch format). Identify bugs, security issues, performance problems, or poor automation practices.
+    
+    You must find and comment on issues in the changed lines.
+    
+    For every issue you find, output exactly this format:
+    LINE: [approximate line number from the patch]
+    COMMENT: [Concise, actionable feedback]
     ---
-
-    If the code looks perfect, reply with ONLY 'LGTM'. Do not output any other format.
+    
+    If the changes are fully optimized and correct, output ONLY 'LGTM'. Do not include any other text.
     """
-
+    
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=diff_text,
+            contents=f"Review this git diff:\n\n{diff_text}",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                temperature=0.2,
+                temperature=0.1,  # Lower temperature makes it follow formatting rules strictly
             )
         )
+        print("--- Raw Gemini Response ---")
+        print(response.text)
+        print("---------------------------")
         return response.text
     except Exception as e:
         print(f"Error calling Gemini API: {e}")
@@ -58,7 +62,7 @@ def parse_comments(llm_output):
     for block in blocks:
         line_match = re.search(r"LINE:\s*(\d+)", block)
         comment_match = re.search(r"COMMENT:\s*(.*)", block, re.DOTALL)
-
+        
         if line_match and comment_match:
             try:
                 line_num = int(line_match.group(1).strip())
@@ -76,32 +80,32 @@ def review_pull_request(repo_name, pr_number):
     # Using the updated non-deprecated Auth method
     auth = Auth.Token(GITHUB_TOKEN)
     g = Github(auth=auth)
-
+    
     repo = g.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
-
+    
     print(f"Analyzing PR #{pr_number}: '{pr.title}'")
-
+    
     # Get the latest commit to bind inline comments to
     latest_commit = pr.get_commits().reversed[0]
     files = pr.get_files()
-
+    
     comments_added = 0
 
     for file in files:
         if file.patch: # Only review files that have actual code modifications
             print(f"Reviewing file: {file.filename}")
-
+            
             # Send the diff patch directly to Gemini
             review_feedback = get_llm_review(file.patch)
-
+            
             if "LGTM" in review_feedback:
                 print(f"No issues found for {file.filename}")
                 continue
-
+                
             # Parse the feedback into structured (line_number, comment) tuples
             parsed_issues = parse_comments(review_feedback)
-
+            
             for line_num, comment_text in parsed_issues:
                 try:
                     # Post the comment to the specific line of the file in the PR
@@ -115,7 +119,7 @@ def review_pull_request(repo_name, pr_number):
                     print(f"Added comment on {file.filename} line {line_num}")
                 except Exception as e:
                     print(f"Couldn't add comment on line {line_num}: {e}")
-
+                    
     # Post a final summary comment on the general PR thread
     if comments_added > 0:
         pr.create_issue_comment(f"🤖 **Agent Review Complete:** Found {comments_added} issues that need attention.")
