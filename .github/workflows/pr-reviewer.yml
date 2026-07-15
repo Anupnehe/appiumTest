@@ -3,12 +3,21 @@ name: AI Pull Request Reviewer
 on:
   pull_request:
     types: [opened, synchronize]
+  # Listen for comments made on the PR
+  issue_comment:
+    types: [created]
 
 jobs:
   review:
     runs-on: ubuntu-latest
     
-    # CRITICAL: This explicitly grants the token permission to post PR comments
+    # Only run the job if it's a PR event OR if a user commented "/review" on a PR
+    if: >
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'issue_comment' && 
+       github.event.issue.pull_request && 
+       contains(github.event.comment.body, '/review'))
+
     permissions:
       pull-requests: write
       contents: read
@@ -21,7 +30,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Fixed typo from python-level to python-version
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
@@ -32,4 +41,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }} 
         run: |
-          python review_agent.py "${{ github.repository }}" ${{ github.event.pull_request.number }}
+          # Determine the PR number based on the trigger event
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            PR_NUM="${{ github.event.issue.number }}"
+          else
+            PR_NUM="${{ github.event.pull_request.number }}"
+          fi
+          
+          python review_agent.py "${{ github.repository }}" "$PR_NUM"
