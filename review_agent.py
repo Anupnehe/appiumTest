@@ -37,7 +37,7 @@ def get_llm_review(diff_text):
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.5-flash',
             contents=f"Review this git diff:\n\n{diff_text}",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
