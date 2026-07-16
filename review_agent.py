@@ -25,8 +25,8 @@ class PullRequestReview(BaseModel):
 
 def get_llm_agent_review(file_name, diff_text, framework_context=""):
     """
-    Agent Core: Evaluates code modifications including infrastructure files using structured output.
-    Includes built-in retry logic (exponential backoff) and a fallback model to prevent API outages.
+    Agent Core: Evaluates code modifications using a hardened zero-tolerance gatekeeper prompt.
+    Includes built-in retry logic (exponential backoff) and production model fallback chains.
     """
     if not LLM_API_KEY:
         print("Warning: LLM_API_KEY is not set.")
@@ -35,21 +35,35 @@ def get_llm_agent_review(file_name, diff_text, framework_context=""):
     client = genai.Client(api_key=LLM_API_KEY)
 
     system_instruction = f"""
-    You are an elite AI Software Development Engineer in Test (SDET), DevSecOps Specialist, and Agentic Reviewer.
-    Your job is to analyze the git diff of a file—which could be test scripts, infrastructure files, pipelines, or automation runner code.
+    ROLE & OBJECTIVE:
+    You are an unforgiving, elite Senior AI Software Development Engineer in Test (SDET), DevSecOps Hardening Specialist, and an autonomous Gatekeeper Agent. Your sole mandate is to ruthlessly analyze the provided git diff and expose technical debt, structural vulnerabilities, and automation flaws before they merge into production.
 
-    Look specifically for:
-    - Automation issues: Hardcoded delays, brittle selectors, missing assertions.
-    - CI/CD issues: Insecure permission blocks, outdated/deprecated library arguments, missing dependencies, or inefficient steps.
-    - Code quality: Missing error handling, unhandled promises, or hardcoded secrets.
+    CRITICAL ANALYSIS CHECKSUMS (NO EXCEPTIONS):
 
-    REPOSITORY FRAMEWORK CONTEXT:
+    1. AUTOMATION ANTI-PATTERNS & FLAKINESS:
+       - Flag ANY hardcoded delays (e.g., time.sleep(), Thread.sleep(), delay()). Demand dynamic conditions using explicit waits (WebDriverWait) or Fluent Waits.
+       - Detect brittle UI selectors. Flag dynamic XPaths (containing indexes like /div[3]/span), auto-generated IDs, or overly generic class names. Enforce stable accessibility IDs (Appium), custom test attributes (data-testid), or clean ID strategies.
+       - Spot structural gaps: Test cases missing strong validation checkpoints or assertions, missing teardown steps that leak state, or unisolated drivers/sessions that cause cross-test pollution.
+
+    2. CI/CD PIPELINE & DEVOPS SECURITY:
+       - Flag excessive or broad workspace permissions (e.g., broad write accesses when read suffices).
+       - Identify deprecated GitHub Action runner fields, outdated dependency variants, hardcoded third-party version tags instead of SHA pins, or missing cache configurations for packages.
+
+    3. HARDENING & CODE QUALITY:
+       - Trap missing try-catch blocks or unhandled exceptions in network/database/driver initializations.
+       - Scan for hardcoded secrets, test credentials, tokens, local file paths, or regional URLs. Enforce environment parameterization.
+       - Flag resource leaks, such as open database connections, unclosed file descriptors, or missing `driver.quit()` sequences.
+
+    CONTEXTUAL REPOSITORY BOUNDARIES:
     {framework_context}
 
-    Analyze the diff for the file '{file_name}'. Provide actionable feedback and valid code replacements matching the schema.
+    CRITICAL PARSING CONSTRAINT:
+    Every issue mapped to the structured schema MUST possess an actual, valid 'line_number' greater than 0 representing the change block. If you discover structural framework architecture issues that apply globally to the file rather than a distinct line, assign it to line number 1.
+
+    TONE AND STYLE:
+    Be strictly technical, blunt, and completely objective. Skip introductory sentences, pleasantries, or polite fluff. State the exact pattern found, the technical fallout if it isn't resolved, and provide a fully production-ready, clean replacement snippet.
     """
 
-    # Active production models to handle deprecations and traffic spikes gracefully
     models_to_try = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
     max_retries = 3
 
@@ -128,19 +142,24 @@ def review_pull_request(repo_name, pr_number):
                 continue
 
             for issue in review_data["issues"]:
-                line_num = issue["line_number"]
+                # Defensively fallback to 1 if the LLM provided an invalid or empty line number
+                try:
+                    line_num = max(1, int(issue.get("line_number", 1)))
+                except (ValueError, TypeError):
+                    line_num = 1
 
                 # Determine file extension to format markdown fences beautifully
                 ext = "yaml" if file.filename.endswith((".yml", ".yaml")) else "python"
 
                 comment_body = (
                     f"### 🤖 AI Agent Review: `{issue['finding_type']}`\n"
-                    f"{issue['explanation']}\n\n"
+                    f"**Defect:** {issue['explanation']}\n\n"
                     f"#### 💡 Suggested Fix:\n"
                     f"```{ext}\n{issue['suggested_fix']}\n```"
                 )
 
                 try:
+                    # Attempt inline comment placement on the exact git patch line
                     pr.create_review_comment(
                         body=comment_body,
                         commit=latest_commit,
@@ -148,9 +167,10 @@ def review_pull_request(repo_name, pr_number):
                         line=line_num
                     )
                     comments_added += 1
-                    print(f"Posted agent fix to {file.filename} line {line_num}")
+                    print(f"Posted rigorous agent fix to {file.filename} line {line_num}")
                 except Exception as e:
-                    print(f"Line mapping mismatch on line {line_num}, attempting fallback to general thread: {e}")
+                    # Graceful boundary protection: Fallback to general thread if line index drifts
+                    print(f"Line {line_num} mapping failed. Attempting fallback to main thread comment. Error: {e}")
                     try:
                         pr.create_issue_comment(f"🤖 **Agent Suggestion for `{file.filename}` near line {line_num}:**\n\n{comment_body}")
                         comments_added += 1
