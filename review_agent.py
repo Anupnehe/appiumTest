@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import time
 from github import Github, Auth
 from google import genai
 from google.genai import types
@@ -25,6 +26,7 @@ class PullRequestReview(BaseModel):
 def get_llm_agent_review(file_name, diff_text, framework_context=""):
     """
     Agent Core: Evaluates code modifications including infrastructure files using structured output.
+    Includes built-in retry logic (exponential backoff) and a fallback model to prevent API outages.
     """
     if not LLM_API_KEY:
         print("Warning: LLM_API_KEY is not set.")
@@ -47,21 +49,39 @@ def get_llm_agent_review(file_name, diff_text, framework_context=""):
     Analyze the diff for the file '{file_name}'. Provide actionable feedback and valid code replacements matching the schema.
     """
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=f"Analyze this patch diff:\n\n{diff_text}",
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.1,
-                response_mime_type="application/json",
-                response_schema=PullRequestReview,
-            )
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        print(f"Agent analysis failed for {file_name}: {e}")
-        return None
+    # Active production models to handle deprecations and traffic spikes gracefully
+    models_to_try = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+    max_retries = 3
+
+    for model_name in models_to_try:
+        for attempt in range(max_retries):
+            try:
+                print(f"Sending {file_name} to {model_name} (Attempt {attempt + 1}/{max_retries})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=f"Analyze this patch diff:\n\n{diff_text}",
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.1,
+                        response_mime_type="application/json",
+                        response_schema=PullRequestReview,
+                    )
+                )
+                return json.loads(response.text)
+
+            except Exception as e:
+                print(f"Warning: Attempt {attempt + 1} for {model_name} failed with error: {e}")
+                if attempt < max_retries - 1:
+                    sleep_time = (attempt + 1) * 3
+                    print(f"Waiting {sleep_time} seconds before retrying...")
+                    time.sleep(sleep_time)
+                else:
+                    print(f"Max retries exhausted for {model_name}.")
+
+        print("Switching to fallback model...")
+
+    print(f"Error: All active models failed for {file_name}.")
+    return None
 
 def get_repository_context(repo):
     """
@@ -98,7 +118,6 @@ def review_pull_request(repo_name, pr_number):
     comments_added = 0
 
     for file in files:
-        # THE SAFETY GATE HAS BEEN REMOVED: Every single changed file is processed here.
         if file.patch:
             print(f"Agent is scanning: {file.filename}")
 
@@ -133,7 +152,6 @@ def review_pull_request(repo_name, pr_number):
                 except Exception as e:
                     print(f"Line mapping mismatch on line {line_num}, attempting fallback to general thread: {e}")
                     try:
-                        # Fallback: post to general PR conversation if the diff line is out of bounds
                         pr.create_issue_comment(f"🤖 **Agent Suggestion for `{file.filename}` near line {line_num}:**\n\n{comment_body}")
                         comments_added += 1
                     except Exception as fallback_err:
