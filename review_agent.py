@@ -13,20 +13,18 @@ load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 
-# Define the structured memory schema for the Agent's reasoning
 class CodeIssue(BaseModel):
-    line_number: int = Field(description="The exact or approximate line number in the file where the issue resides.")
-    finding_type: str = Field(description="Categories like: Brittle Selector, Hardcoded Wait, Security, Performance, Missing Assertion.")
-    explanation: str = Field(description="Clear explanation of why this is bad practice and how it affects the test framework.")
-    suggested_fix: str = Field(description="The complete, corrected replacement code snippet block.")
+    line_number: int = Field(description="The exact or approximate line number in the file where the issue resides. Must be a valid positive integer.")
+    finding_type: str = Field(description="Categories like: Brittle Selector, Hardcoded Wait, Security, Performance, Missing Assertion, CI/CD Optimization.")
+    explanation: str = Field(description="Clear explanation of why this is bad practice and how it affects the framework.")
+    suggested_fix: str = Field(description="The complete, corrected replacement code snippet or configuration block.")
 
 class PullRequestReview(BaseModel):
-    issues: list[CodeIssue] = Field(description="List of all code anomalies or architectural bugs found.")
+    issues: list[CodeIssue] = Field(description="List of all anomalies, optimization bugs, or structural issues found.")
 
 def get_llm_agent_review(file_name, diff_text, framework_context=""):
     """
-    Agent Core: Evaluates code modifications using structured output schema.
-    Injects global framework context to simulate repository memory.
+    Agent Core: Evaluates code modifications including infrastructure files using structured output.
     """
     if not LLM_API_KEY:
         print("Warning: LLM_API_KEY is not set.")
@@ -35,19 +33,18 @@ def get_llm_agent_review(file_name, diff_text, framework_context=""):
     client = genai.Client(api_key=LLM_API_KEY)
 
     system_instruction = f"""
-    You are an elite AI Software Development Engineer in Test (SDET) and Agentic Code Reviewer.
-    Your job is to analyze the git diff of a file and find bugs, structural problems, or bad testing practices.
+    You are an elite AI Software Development Engineer in Test (SDET), DevSecOps Specialist, and Agentic Reviewer.
+    Your job is to analyze the git diff of a file—which could be test scripts, infrastructure files, pipelines, or automation runner code.
 
     Look specifically for:
-    - Hardcoded explicit delays (e.g., time.sleep(), Thread.sleep()) without dynamic WebDriverWait.
-    - Brittle locators/selectors that will easily break in UI changes.
-    - Missing assertions or verification checkpoints in automation scripts.
-    - Exposed credentials, tokens, or hardcoded environment configurations.
+    - Automation issues: Hardcoded delays, brittle selectors, missing assertions.
+    - CI/CD issues: Insecure permission blocks, outdated/deprecated library arguments, missing dependencies, or inefficient steps.
+    - Code quality: Missing error handling, unhandled promises, or hardcoded secrets.
 
     REPOSITORY FRAMEWORK CONTEXT:
     {framework_context}
 
-    Analyze the diff for the file '{file_name}'. You must return your findings matching the schema requested.
+    Analyze the diff for the file '{file_name}'. Provide actionable feedback and valid code replacements matching the schema.
     """
 
     try:
@@ -57,7 +54,6 @@ def get_llm_agent_review(file_name, diff_text, framework_context=""):
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 temperature=0.1,
-                # Force the model to think structurally and populate our Pydantic schema
                 response_mime_type="application/json",
                 response_schema=PullRequestReview,
             )
@@ -69,8 +65,7 @@ def get_llm_agent_review(file_name, diff_text, framework_context=""):
 
 def get_repository_context(repo):
     """
-    Simulates Repository Memory: Scans key configuration files to give the agent
-    architectural awareness of the project it is reviewing.
+    Simulates Repository Memory: Scans key configuration files to give the agent awareness.
     """
     context_summary = "Project Structure Clues:\n"
     possible_configs = ["pom.xml", "build.gradle", "requirements.txt", "testng.xml"]
@@ -94,9 +89,8 @@ def review_pull_request(repo_name, pr_number):
     repo = g.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
 
-    print(f"🤖 Agent online. Analyzing PR #{pr_number}: '{pr.title}'")
+    print(f"🤖 Agent online. Analyzing ALL modified files for PR #{pr_number}: '{pr.title}'")
 
-    # 1. Initialize Contextual Memory
     framework_context = get_repository_context(repo)
 
     latest_commit = pr.get_commits().reversed[0]
@@ -104,32 +98,27 @@ def review_pull_request(repo_name, pr_number):
     comments_added = 0
 
     for file in files:
-        # 2. Self-Preservation / Filter Loop
-        # Prevents the agent from hallucinating or entering cycles by reviewing itself
-        if "review_agent.py" in file.filename or ".github/workflows" in file.filename:
-            print(f"Skipping self-review on layout file: {file.filename}")
-            continue
-
+        # THE SAFETY GATE HAS BEEN REMOVED: Every single changed file is processed here.
         if file.patch:
             print(f"Agent is scanning: {file.filename}")
 
-            # 3. Reasoning Phase
             review_data = get_llm_agent_review(file.filename, file.patch, framework_context)
 
             if not review_data or not review_data.get("issues"):
                 print(f"No defects identified in {file.filename}")
                 continue
 
-            # 4. Action Execution Phase
             for issue in review_data["issues"]:
                 line_num = issue["line_number"]
 
-                # Format an elegant markdown comment with the self-healing suggestion
+                # Determine file extension to format markdown fences beautifully
+                ext = "yaml" if file.filename.endswith((".yml", ".yaml")) else "python"
+
                 comment_body = (
                     f"### 🤖 AI Agent Review: `{issue['finding_type']}`\n"
                     f"{issue['explanation']}\n\n"
                     f"#### 💡 Suggested Fix:\n"
-                    f"```python\n{issue['suggested_fix']}\n```"
+                    f"```{ext}\n{issue['suggested_fix']}\n```"
                 )
 
                 try:
@@ -142,12 +131,16 @@ def review_pull_request(repo_name, pr_number):
                     comments_added += 1
                     print(f"Posted agent fix to {file.filename} line {line_num}")
                 except Exception as e:
-                    # Fallback to general thread if line mapping drifts slightly
-                    print(f"Line mapping mismatch, fallback to general thread: {e}")
+                    print(f"Line mapping mismatch on line {line_num}, attempting fallback to general thread: {e}")
+                    try:
+                        # Fallback: post to general PR conversation if the diff line is out of bounds
+                        pr.create_issue_comment(f"🤖 **Agent Suggestion for `{file.filename}` near line {line_num}:**\n\n{comment_body}")
+                        comments_added += 1
+                    except Exception as fallback_err:
+                        print(f"Failed to post fallback comment: {fallback_err}")
 
-    # 5. Final Summary Execution
     if comments_added > 0:
-        pr.create_issue_comment(f"🤖 **Agent Review Complete:** Found {comments_added} structural areas and added self-healing code fixes inline.")
+        pr.create_issue_comment(f"🤖 **Agent Review Complete:** Found {comments_added} structural areas across all files and added code fixes.")
     else:
         pr.create_issue_comment("🤖 **Agent Review Complete:** Scanned all codebases against framework baselines. Everything looks solid! LGTM! 🎉")
 
